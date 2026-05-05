@@ -1,12 +1,23 @@
 export const getPosts = async (req, res) => {
   try {
-    const { lat, lng } = req.query;
-const radius = parseInt(req.query.radius) || 50000;
-    // ✅ fallback: if no location → return latest posts
+    const { lat, lng, category, urgency } = req.query;
+    const radius = parseInt(req.query.radius) || 50000;
+
+    // ✅ Common filter
+    const matchStage = {
+      expiresAt: { $gt: new Date() },
+    };
+
+    // ✅ Apply filters
+    if (category) matchStage.category = category;
+    if (urgency) matchStage.urgency = urgency;
+
+    let posts = [];
+
+    // ✅ CASE 1: No location → global feed
     if (!lat || !lng) {
-      const posts = await Post.find({
-        expiresAt: { $gt: new Date() },
-      }).sort({ createdAt: -1 });
+      posts = await Post.find(matchStage)
+        .sort({ createdAt: -1 });
 
       return res.json(posts);
     }
@@ -14,27 +25,38 @@ const radius = parseInt(req.query.radius) || 50000;
     const parsedLat = parseFloat(lat);
     const parsedLng = parseFloat(lng);
 
-    // ✅ validate numbers
     if (isNaN(parsedLat) || isNaN(parsedLng)) {
       return res.status(400).json({
         message: "Invalid location coordinates",
       });
     }
 
-    // ✅ geo query
-    const posts = await Post.find({
-      expiresAt: { $gt: new Date() },
-
-      location: {
-        $near: {
-          $geometry: {
+    // ✅ CASE 2: GEO QUERY WITH DISTANCE
+    posts = await Post.aggregate([
+      {
+        $geoNear: {
+          near: {
             type: "Point",
             coordinates: [parsedLng, parsedLat],
           },
-          $maxDistance: 50000, // 5km
+          distanceField: "distance", // 🔥 IMPORTANT
+          maxDistance: radius,
+          spherical: true,
         },
       },
-    }).sort({ createdAt: -1 });
+      {
+        $match: matchStage,
+      },
+      {
+        $sort: { createdAt: -1 },
+      },
+    ]);
+
+    // ✅ CASE 3: fallback → global if no nearby
+    if (!posts || posts.length === 0) {
+      posts = await Post.find(matchStage)
+        .sort({ createdAt: -1 });
+    }
 
     res.json(posts);
 
